@@ -1,0 +1,220 @@
+apiVersion: v1
+kind: Template
+metadata:
+  name: octavo
+  annotations:
+    description: Octavo API
+parameters:
+  - name: APP_NAME
+    value: "app"
+    displayName: "App Name"
+    description: "Name for the Octavo instance. For simplicity everything (BuildConfig, ImageStream, DeployConfig, etc. related) will be named using this."
+  - name: JAVA_OPTS
+    value: "-Xmx7G -Dindices.hs=/opt/docker/index -Dauths.hs=ZmxvcG86ZGhoMTc="
+    displayName: "Octavo Java options"
+  - name: LOGS_CLAIM_SIZE
+    value: "5Gi"
+    displayName: "Log volume claim size"
+  - name: INDEX_CLAIM_SIZE
+    value: "25Gi"
+    displayName: "Index volume claim size"
+  - name: OCTAVO_IMAGE
+    displayName: "Octavo Image at Dockerhub"
+    value: "jiemakel/octavo"
+  - name: OCTAVO_IMAGE_TAG
+    displayName: "Octavo Image Tag"
+    value: "latest"
+  - name: HOSTNAME
+    displayName: "Host name under which to expose the service"
+    value: "octavo.rahtiapp.fi"
+  - name: ROUTE_TIMEOUT
+    displayName: "Maximum timeout for the route"
+    value: "120m"
+  - name: MIN_REPLICA_COUNT
+    displayName: "Minimum number of replicas for autoscaling"
+    value: "1"
+  - name: MAX_REPLICA_COUNT
+    displayName: "Maximum number of replicas for autoscaling"
+    value: "8"
+  - name: TARGET_CPU_UTILIZATION_PERCENTAGE
+    displayName: "Target CPU utilization percentage for autoscaling"
+    value: "80"
+objects:
+  - kind: PersistentVolumeClaim
+    apiVersion: v1
+    metadata:
+      name: "${APP_NAME}-octavo-logs"
+      labels:
+        app: "${APP_NAME}"
+        component: octavo-logs
+    spec:
+      accessModes:
+        - ReadWriteMany
+      resources:
+        requests:
+          storage: "${LOGS_CLAIM_SIZE}"
+  - kind: PersistentVolumeClaim
+    apiVersion: v1
+    metadata:
+      name: "${APP_NAME}-octavo-index"
+      labels:
+        app: "${APP_NAME}"
+        component: octavo-index
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: "${INDEX_CLAIM_SIZE}"
+  - kind: ImageStream
+    apiVersion: v1
+    metadata:
+      name: "${APP_NAME}-octavo"
+      labels:
+        app: "${APP_NAME}"
+    spec:
+      lookupPolicy:
+        local: false
+      tags:
+        - name: "${OCTAVO_IMAGE_TAG}"
+          from:
+            kind: DockerImage
+            name: "${OCTAVO_IMAGE}"
+          importPolicy:
+            scheduled: true
+          referencePolicy:
+            type: Source
+  - kind: DeploymentConfig
+    apiVersion: v1
+    metadata:
+      name: "${APP_NAME}-octavo"
+      labels:
+        app: "${APP_NAME}"
+        component: octavo
+    spec:
+      replicas: 1
+      selector:
+        app: "${APP_NAME}"
+        component: octavo
+      strategy:
+        activeDeadlineSeconds: 21600
+        rollingParams:
+          intervalSeconds: 1
+          maxSurge: 25%
+          maxUnavailable: 25%
+          timeoutSeconds: 600
+          updatePeriodSeconds: 1
+        type: Rolling
+      template:
+        metadata:
+          labels:
+            app: "${APP_NAME}"
+            component: octavo
+        spec:
+          containers:
+            - name: "${APP_NAME}-octavo"
+              env:
+                - name: JAVA_OPTS
+                  value: "${JAVA_OPTS}"
+              image: "${OCTAVO_IMAGE}:${OCTAVO_IMAGE_TAG}"
+              imagePullPolicy: Always
+              livenessProbe:
+                failureThreshold: 3
+                httpGet:
+                  path: /
+                  port: 9000
+                  scheme: HTTP
+                initialDelaySeconds: 10
+                periodSeconds: 10
+                successThreshold: 1
+                timeoutSeconds: 1
+              ports:
+                - containerPort: 9000
+                  protocol: TCP
+              readinessProbe:
+                failureThreshold: 3
+                httpGet:
+                  path: /
+                  port: 9000
+                  scheme: HTTP
+                initialDelaySeconds: 10
+                periodSeconds: 10
+                successThreshold: 1
+                timeoutSeconds: 1
+              volumeMounts:
+                - mountPath: /opt/docker/index
+                  name: "${APP_NAME}-octavo-index"
+                - mountPath: /opt/docker/logs
+                  name: "${APP_NAME}-octavo-logs"
+                - mountPath: /opt/docker/tmp
+                  name: "${APP_NAME}-octavo-tmp"
+          restartPolicy: Always
+          terminationGracePeriodSeconds: 30
+          volumes:
+            - emptyDir: {}
+              name: "${APP_NAME}-octavo-tmp"
+            - name: "${APP_NAME}-octavo-logs"
+              persistentVolumeClaim:
+                claimName: "${APP_NAME}-octavo-logs"
+            - name: "${APP_NAME}-octavo-index"
+              persistentVolumeClaim:
+                claimName: "${APP_NAME}-octavo-index"
+        triggers:
+          - type: ConfigChange
+          - type: ImageChange
+            imageChangeParams:
+              automatic: true
+              containerNames:
+                - "${APP_NAME}-octavo"
+              from:
+                kind: ImageStreamTag
+                name: "${OCTAVO_IMAGE}:${OCTAVO_IMAGE_TAG}"
+  - kind: HorizontalPodAutoscaler
+    apiVersion: autoscaling/v1
+    metadata:
+      name: "${APP_NAME}-octavo"
+      labels:
+        app: "${APP_NAME}"
+        component: octavo
+    spec:
+      scaleTargetRef:
+        kind: DeploymentConfig
+        name: "${APP_NAME}-octavo"
+        apiVersion: v1
+      minReplicas: "${MIN_REPLICA_COUNT}"
+      maxReplicas: "${MAX_REPLICA_COUNT}"
+      targetCPUUtilizationPercentage: "${TARGET_CPU_UTILIZATION_PERCENTAGE}"
+  - kind: Service
+    apiVersion: v1
+    metadata:
+      name: "${APP_NAME}-octavo"
+      labels:
+        app: "${APP_NAME}"
+        component: octavo
+    spec:
+      selector:
+        app: "${APP_NAME}"
+        component: octavo
+      ports:
+        - name: http
+          port: 9000
+          protocol: TCP
+          targetPort: 9000
+  - kind: Route
+    apiVersion: v1
+    metadata:
+      annotations:
+        haproxy.router.openshift.io/timeout: "${ROUTE_TIMEOUT}"
+      name: "${APP_NAME}-octavo"
+      labels:
+        app: "${APP_NAME}"
+        component: octavo
+    spec:
+      host: "${HOSTNAME}"
+      port:
+        targetPort: 9000
+      tls:
+        termination: edge
+      to:
+        kind: Service
+        name: "${APP_NAME}-octavo"

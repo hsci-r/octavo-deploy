@@ -1,0 +1,36 @@
+version: '2'
+
+services:
+  traefik:
+    image: traefik:1.7
+    restart: always
+    ports:
+      - 80:80
+      - 443:443
+    networks:
+      - web
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/traefik/traefik.toml:/traefik.toml
+      - /opt/traefik/acme.json:/acme.json
+    container_name: traefik
+  octavo:
+    image: jiemakel/octavo:latest
+    volumes:
+      - /data/yle-index:/opt/docker/index
+    restart: always
+    environment: 
+      - "JAVA_OPTS=-Dindices.yle=/opt/docker/index -Dauths.yle=ZmxvcG86ZGhoMTc="
+    expose: 
+      - "9000"
+    networks: 
+      - web
+    labels:
+      - "traefik.docker.network=web"
+      - "traefik.frontend.rule=Host:vm0465.kaj.pouta.csc.fi"
+      - "traefik.port=9000"
+      - "traefik.enable=true"
+        # - "traefik.frontend.auth.basic=flopo:$$apr1$$Z/VRoyvZ$$0ELziALl1qVe9iyOCjqdJ1"
+    container_name: octavo
+networks:
+  web:
